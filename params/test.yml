@@ -1,0 +1,23 @@
+alg:
+  num_iters: 10
+  initialization: 'min' # zeros, min, mean
+  solver: 'adaptive' #grid, adaptive
+  use_k_views: true
+  num_k_views: 2
+  num_k_views_iters: 10
+  ring: [1] # [1], [2], [1,2], n-ring neighbors, only supporting 2 views
+
+camera:
+  aspect_ratio: 0.6666666666666
+  focal_length: 50 # mm
+  hyperfocal_distance: 10000 # hyperfocal distance mm
+
+loss:
+  mode: 'add'
+  weights: [0.33333333, 0.33333333, 0.33333333] # sum to 1
+  projection_area_loss_type: 'l1' # l0, l1, l2
+  focal_loss_type: 'l0' # l0, l1, l2
+  off_optical_axis_loss_type: 'l1' # l0, l1, l2
+  projection_area_threshold: 0.000001 # 1000 mm 
+  off_optical_axis_threshold_distance: 750 # mm
+  num_focus_intervals: 4 # even number, must have 0 - D_N, D_N - S, S - D_F,  D_F - infinity, only 4 intervals are supported

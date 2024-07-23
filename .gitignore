@@ -1,0 +1,7 @@
+*.ply
+*.png
+*.json
+*.zip
+*.pkl
+__pycache__
+data/
