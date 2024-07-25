@@ -5,8 +5,9 @@ import time
 import logging
 from multiprocessing import Pool, Manager
 
-import Solver
-from Utils import wrap_em_common_result, get_em_common_result, load_output, save_output
+import Solver, Loss
+from EM import assignment_step
+from Utils import init_data, wrap_kview_result, get_kview_result, load_output, save_output, initialize_focus_distances, getVisiblePointSetAllCameras
 from Analyze import analyze_loss_per_camera
 from ParamsParser import load_params, get_loss_params, get_camera_params
 from Logger import setup_logging, log_args
@@ -139,7 +140,7 @@ def optimization_step_group_views(pts, pts_normals, max_pts_set_per_camera, pts_
             logging.info("[ERROR]: optimizing individual camera has smaller loss (diff: {})".format(loss_diff))
 
     # wrap the results
-    result = wrap_em_common_result(losses_camera_group_indiv, losses_camera_group_common,\
+    result = wrap_kview_result(losses_camera_group_indiv, losses_camera_group_common,\
                 focus_distances_camera_group, assignment_camera_group)
 
     return result
@@ -295,7 +296,7 @@ def optimization_step_group_views_parallel(pts, pts_normals, max_pts_set_per_cam
             logging.info("[ERROR]: optimizing individual camera has smaller loss (diff: {})".format(loss_diff))
 
     # wrap the results
-    result = wrap_em_common_result(losses_camera_group_indiv, losses_camera_group_common,\
+    result = wrap_kview_result(losses_camera_group_indiv, losses_camera_group_common,\
                 focus_distances_camera_group, assignment_camera_group)
 
     return result
@@ -360,28 +361,32 @@ def greedyUpdate(camera_ids_group, focus_distances, pts_set_per_camera,\
 def main():
 
     import argparse
-    import glob
     import shutil
 
     # argument set-up
     parser = argparse.ArgumentParser(description="Run k-view algorithm for focus distance optimization.")
     parser.add_argument("-i", "--input", type=str, help="Path to subject folder")
-    parser.add_argument("-em", "--em", type=str, default="output_em", help="Em folder")
-    parser.add_argument("-iter", "--iter", type=int, default=-1, help="Iteration in EM to use as the initialization for KViews, default: -1  (last)")
+    parser.add_argument("-c", "--camera", type=str, help="Name of camera config")
+    parser.add_argument("-ini", "--ini", type=str, help="Initialization file")
     parser.add_argument("-p", "--params", type=str, help="Path to params file")
+    parser.add_argument("-pcd", "--pcd", type=str, default="sampled.ply", help="Name of pcd file")
     parser.add_argument("-d", "--debug", action="store_true", help="Debug mode (store true)")
     parser.add_argument("-v", "--verbosity", type=str, default="info", help="Verbosity (default: info)")
     parser.add_argument("-s", "--save_dir", type=str, default="output_kview", help="Path to save dir")
 
-    # # Parse the command line arguments to an object
+    # Parse the command line arguments to an object
     args = parser.parse_args()
-    if not args.input:
+    if not args.input or not args.camera or not args.params:
         print("No input data is provided.")
         print("For help type --help")
         exit()
 
-    root_dir = os.path.join(args.input, args.em)
-    param_file = args.params
+    # load data
+    root_dir = os.path.join(args.input)
+    camera_pkl_file = os.path.join(root_dir, args.camera)
+    mesh_path = os.path.join(root_dir, "real_scale_in_mm.ply")
+    sampled_pts_path = os.path.join(root_dir, args.pcd)
+
     DEBUG = args.debug
     SAVE_DIR = os.path.join(args.input, args.save_dir)
     os.makedirs(SAVE_DIR, exist_ok=True)
@@ -389,38 +394,52 @@ def main():
     log_args(args)
 
     # load params
+    param_file = args.params
     params = load_params(param_file)
+    INITIALIZATION = params['alg']["initialization"]
     NUM_K_VIEWS = params['alg']['num_k_views']
     RING = params['alg']['ring']
     NUM_ITERS = params['alg']["num_k_views_iters"]
     camera_params = get_camera_params(params) 
     loss_params = get_loss_params(params)
     log_args(params)
-
-    # load output data for initizialiation
-    outfnames = glob.glob(os.path.join(root_dir, "*.pkl"))
-    # remove irrelevant files 
-    for input_file in outfnames.copy():
-        basename = os.path.basename(input_file)
-        if "output_iter" not in basename:
-            outfnames.remove(input_file)
-    outfnames.sort()
-    outfname = outfnames[args.iter]
-    cameras_network, focus_distances, max_pts_set_per_camera, pts, pts_normals,\
-                pts_set_per_camera = load_output(outfname)
-    pts_set_per_camera = np.array(pts_set_per_camera, dtype='object') # debug
     shutil.copy(param_file, os.path.join(SAVE_DIR, "params.yml")) # copy params to the input folder
 
-    logging.info("Applying K-View optimization to {}".format(outfname))
+    # initizialiation from an initailization file, e.g., output from EM
+    if args.ini:
+        cameras_network, focus_distances, vis_pts_set_per_camera, pts, pts_normals,\
+                    pts_set_per_camera = load_output(args.ini)
+        pts_set_per_camera = np.array(pts_set_per_camera, dtype='object') # debug
+        camera_positions, camera_dirs, _ = cameras_network.parseCameras()
+        logging.info("Applying K-View optimization to {}".format(args.ini))
 
-    # debug: check pts assignment result
-    logging.debug("num of pts: ".format(len(pts)))
-    for camera_id, pts_set in enumerate(pts_set_per_camera):
-        if len(pts_set) == 0:
-            logging.debug("camera {} does not have assigned points.".format(camera_id))
+        # debug: check pts assignment result
+        logging.debug("num of pts: ".format(len(pts)))
+        for camera_id, pts_set in enumerate(pts_set_per_camera):
+            if len(pts_set) == 0:
+                logging.debug("camera {} does not have assigned points.".format(camera_id))
 
-    # point set 2: camera poses
-    camera_positions, camera_dirs, _ = cameras_network.parseCameras()
+    # initialization from scratch
+    else:
+        pts, pts_normals, vis_pts_set_per_camera, cameras_network = init_data(mesh_path, sampled_pts_path, camera_pkl_file)
+        camera_positions, camera_dirs, _ = cameras_network.parseCameras()
+
+        # initialize focus distance for each camera
+        focus_distances = initialize_focus_distances(pts, vis_pts_set_per_camera,\
+                                                    camera_positions, camera_dirs, mode=INITIALIZATION)
+        # initialize assignment
+        loss_per_pt = Loss.getViewQualiyLossAllCameras(pts, pts_normals, vis_pts_set_per_camera,\
+                                                        camera_positions, camera_dirs, focus_distances=focus_distances,\
+                                                        camera_params=camera_params, loss_params=loss_params)
+        pts_set_per_camera, _ = assignment_step(loss_per_pt, debug=DEBUG)
+
+    losses_per_camera_indiv = analyze_loss_per_camera(pts, pts_normals, pts_set_per_camera, vis_pts_set_per_camera,\
+                                                    camera_positions, camera_dirs, focus_distances,\
+                                                    camera_params=camera_params, loss_params=loss_params)
+    loss_initial = sum(losses_per_camera_indiv)
+    logging.info("Initial total loss: {}".format(loss_initial))
+
+    # set up camera groups for k-view optimization
     if NUM_K_VIEWS == 2:
         camera_ids_group = cameras_network.createCameraPairsID(ring=RING)
     elif NUM_K_VIEWS == 3:
@@ -429,13 +448,6 @@ def main():
         raise NotImplementedError("NUM_K_VIEWS > 3 is not implemented yet.")
     if DEBUG:
         print(camera_ids_group)
-
-    ### from initialization, ex: EM
-    losses_per_camera_indiv = analyze_loss_per_camera(pts, pts_normals, pts_set_per_camera, max_pts_set_per_camera,\
-                                                    camera_positions, camera_dirs, focus_distances,\
-                                                    camera_params=camera_params, loss_params=loss_params)
-    loss_initial = sum(losses_per_camera_indiv)
-    logging.info("Initial total loss: {}".format(loss_initial))
 
     total_loss = loss_initial
     t00 = time.perf_counter()
@@ -447,24 +459,20 @@ def main():
             focus_distances_updated = focus_distances.copy()
             pts_set_per_camera_updated = pts_set_per_camera.copy()
         else:
-            # update
-            # result = optimization_step_group_views(pts, pts_normals, max_pts_set_per_camera, pts_set_per_camera,\
-            #     camera_positions, camera_dirs, camera_ids_group, losses_per_camera_indiv, camera_params, loss_params)
-            result = optimization_step_group_views_parallel(pts, pts_normals, max_pts_set_per_camera, pts_set_per_camera,\
+            result = optimization_step_group_views_parallel(pts, pts_normals, vis_pts_set_per_camera, pts_set_per_camera,\
                 camera_positions, camera_dirs, camera_ids_group, losses_per_camera_indiv, camera_params, loss_params, debug=DEBUG)
             t1 = time.perf_counter()
             logging.info("K views otimization takes {:.3f} s".format(t1-t0))
 
-            pickle_file = outfname.replace(".pkl", "_{}_views_{}_iter_{}.pkl".format(NUM_K_VIEWS, RING, i))
-            pickle_file = pickle_file.replace("output", "result")
+            # save the intermediate results
+            pickle_file = "cache_iter_{}.pkl".format(i)
             pickle_file = os.path.join(SAVE_DIR, os.path.basename(pickle_file))
-            # save the results
             with open(pickle_file, "wb") as f:
-                logging.info("Saving results to {}".format(pickle_file))
+                logging.info("Saving intermediate result to {}".format(pickle_file))
                 pickle.dump(result, f)
 
             losses_camera_group_indiv, losses_camera_group_common,\
-                focus_distances_camera_group, assignment_camera_group = get_em_common_result(result)
+                focus_distances_camera_group, assignment_camera_group = get_kview_result(result)
 
             t0 = time.perf_counter()
             # Greedy update
@@ -473,7 +481,7 @@ def main():
             t1 = time.perf_counter()
             logging.info("greedy update takes {:.3f} s".format(t1-t0))
 
-            losses_per_camera_common = analyze_loss_per_camera(pts, pts_normals, pts_set_per_camera_updated, max_pts_set_per_camera,\
+            losses_per_camera_common = analyze_loss_per_camera(pts, pts_normals, pts_set_per_camera_updated, vis_pts_set_per_camera,\
                                                             camera_positions, camera_dirs, focus_distances_updated,\
                                                             camera_params=camera_params, loss_params=loss_params)
             loss_common = sum(losses_per_camera_common)
@@ -486,13 +494,13 @@ def main():
             # update for next iteration
             focus_distances = focus_distances_updated.copy()
             pts_set_per_camera = pts_set_per_camera_updated.copy()
-            losses_per_camera_indiv = analyze_loss_per_camera(pts, pts_normals, pts_set_per_camera_updated, max_pts_set_per_camera,\
+            losses_per_camera_indiv = analyze_loss_per_camera(pts, pts_normals, pts_set_per_camera_updated, vis_pts_set_per_camera,\
                                                             camera_positions, camera_dirs, focus_distances_updated,\
                                                             camera_params=camera_params, loss_params=loss_params)
             total_loss = loss_common
 
-        pickle_file = os.path.basename(outfname).replace(".pkl", "_{}_views_{}_iter_{}.pkl".format(NUM_K_VIEWS, RING, i))
-        save_output(cameras_network, focus_distances_updated, max_pts_set_per_camera, pts, pts_normals,\
+        pickle_file = "output_iter_{}.pkl".format(i)
+        save_output(cameras_network, focus_distances_updated, vis_pts_set_per_camera, pts, pts_normals,\
                     pts_set_per_camera_updated, outfname=pickle_file, save_dir=SAVE_DIR)
 
     t11 = time.perf_counter()

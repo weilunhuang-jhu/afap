@@ -1,56 +1,10 @@
 import os
 import numpy as np
-import trimesh
-import open3d as o3d
 
-import Camera, Solver, Loss
-from Utils import getVisiblePointSetAllCameras, save_output
+import Solver, Loss
+from Utils import init_data, save_output, initialize_focus_distances
 from Analyze import analyze_loss_per_camera
 from ParamsParser import load_params, get_loss_params, get_camera_params
-
-def initialize_focus_distances(pts, pts_set_per_camera, camera_positions, camera_dirs, mode='mean'):
-    """
-        Initialize focus distance for each camera.
-
-        Use zero/closest/average depth from the camera to its viisible point set.
-
-    Args:
-        pts: total point set, np array of shape (num points x 3) (in cartesian coordinates)
-        pts_set_per_camera: list of point set for each camera. Each point set is represented in point ids, 1-d np array.
-                            NOTE: Ids are ordered in the order of the total point set.
-                            NOTE: The points are already processed so that all the points are visible to the camera
-        camera_positions: array of camera positions, np array of shape (num cameras x 3)
-        camera_dirs: array of camera viewing directions, np array of shape (num cameras x 3)
-        mode: how to initialize focus distance, "min" for closest depth, "mean" for average depth, "zero" for zero depth
-
-    Returns:
-        focus_distances: array of focus distances, np array of shape (num cameras, )
-    """
-
-    focus_distances = []
-    for i, pts_set_ids, camera_position, camera_dir in zip(range(len(camera_positions)), pts_set_per_camera, camera_positions, camera_dirs):
-        if len(pts_set_ids) == 0: # no points visibile to this camera  # NOTE: check if there is a better way to handle this
-            focus_distances.append(0)
-            print("[Warning]: No point is visible to camera {}".format(i))
-            continue
-
-        pts_set_ids = np.array(pts_set_ids)
-        points = pts[pts_set_ids]
-        depths = trimesh.points.point_plane_distance(points, camera_dir.flatten(), camera_position.flatten())
-
-        if mode == "min": # closest depth
-            focus_distance = np.min(depths)
-        elif mode == "mean": # average depth
-            focus_distance = np.mean(depths)
-        elif mode == "zero": # zero depth
-            focus_distance = 0
-        else:
-            raise ValueError("Invalid mode: ", mode)
-        focus_distances.append(focus_distance)
-
-    focus_distances = np.array(focus_distances)
-
-    return focus_distances
 
 def assignment_step(loss_per_pt, debug=False):
     """
@@ -179,8 +133,9 @@ def main():
     root_dir = args.input
     camera_pkl_file = os.path.join(root_dir, args.camera)
     mesh_path = os.path.join(root_dir, "real_scale_in_mm.ply")
-    mesh_trimesh = trimesh.load(mesh_path, process=False, use_embree=True)
     sampled_pts_path = os.path.join(root_dir, args.pcd)
+    pts, pts_normals, vis_pts_set_per_camera, cameras_network = init_data(mesh_path, sampled_pts_path, camera_pkl_file)
+    camera_positions, camera_dirs, _ = cameras_network.parseCameras()
 
     DEBUG = args.debug
     SAVE_DIR = os.path.join(args.input, args.save_dir)
@@ -196,29 +151,6 @@ def main():
     camera_params = get_camera_params(params) 
     loss_params = get_loss_params(params)
     shutil.copy(param_file, os.path.join(SAVE_DIR, "params.yml")) # copy params to the input folder
-
-    # load points: uniformly sampled on the mesh
-    pcd = o3d.io.read_point_cloud(sampled_pts_path)
-    pts = np.asarray(pcd.points)
-    pts_normals = np.asarray(pcd.normals)
-
-    # load camera configuration
-    cameras_network = Camera.loadCamerasNetwork(camera_pkl_file)
-    cameras = cameras_network.cameras
-    camera_positions, camera_dirs, camera_poses = cameras_network.parseCameras()
-
-    # create the visible point set for each camera based on FOV and considering occlusion
-    t0  = time.perf_counter()
-    vis_pts_set_per_camera, pts_set_ids_visible = getVisiblePointSetAllCameras(mesh_trimesh, pts, cameras, camera_positions, camera_poses, return_unique_set=True) # list of vertex indices in trimesh
-    t1  = time.perf_counter()
-    print("time for computing visible pts: ", (t1-t0))
-    print("num of visible pts: ", len(pts_set_ids_visible))
-
-    # update points and vis_pts_set_per_camera after removing invisible points
-    pts = pts[pts_set_ids_visible]
-    pts_normals = pts_normals[pts_set_ids_visible]
-    vis_pts_set_per_camera, temp = getVisiblePointSetAllCameras(mesh_trimesh, pts, cameras, camera_positions, camera_poses, return_unique_set=True) # list of vertex indices in trimesh
-    assert len(pts_set_ids_visible) == len(temp)
 
     pts_set_per_camera_updated = None
 

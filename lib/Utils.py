@@ -3,6 +3,35 @@ import cv2
 import pickle
 import numpy as np
 import trimesh
+import open3d as o3d
+import Camera
+
+def init_data(mesh_path, sampled_pts_path, camera_pkl_file, ):
+
+    # load mesh
+    mesh_trimesh = trimesh.load(mesh_path, process=False, use_embree=True)
+
+    # load points: uniformly sampled on the mesh
+    pcd = o3d.io.read_point_cloud(sampled_pts_path)
+    pts = np.asarray(pcd.points)
+    pts_normals = np.asarray(pcd.normals)
+
+    # load camera configuration
+    cameras_network = Camera.loadCamerasNetwork(camera_pkl_file)
+    cameras = cameras_network.cameras
+    camera_positions, camera_dirs, camera_poses = cameras_network.parseCameras()
+
+    # create the visible point set for each camera based on FOV and considering occlusion
+    vis_pts_set_per_camera, pts_set_ids_visible = getVisiblePointSetAllCameras(mesh_trimesh, pts, cameras, camera_positions, camera_poses, return_unique_set=True) # list of vertex indices in trimesh
+    print("num of visible pts: ", len(pts_set_ids_visible))
+
+    # update points and vis_pts_set_per_camera after removing invisible points
+    pts = pts[pts_set_ids_visible]
+    pts_normals = pts_normals[pts_set_ids_visible]
+    vis_pts_set_per_camera, temp = getVisiblePointSetAllCameras(mesh_trimesh, pts, cameras, camera_positions, camera_poses, return_unique_set=True) # list of vertex indices in trimesh
+    assert len(pts_set_ids_visible) == len(temp)
+
+    return  pts, pts_normals, vis_pts_set_per_camera, cameras_network
 
 def save_output(cameras_network, focus_distances, max_pts_set_per_camera, pts, pts_normals,\
                 pts_set_per_camera=None, outfname="output.pkl", save_dir=""):
@@ -33,7 +62,7 @@ def load_output(outfname):
     return (cameras_network, focus_distances, max_pts_set_per_camera, pts, pts_normals,\
             pts_set_per_camera)
 
-def wrap_em_common_result(losses_camera_group_indiv, losses_camera_group_common, focus_distances_camera_group, assignment_camera_group):
+def wrap_kview_result(losses_camera_group_indiv, losses_camera_group_common, focus_distances_camera_group, assignment_camera_group):
 
     result = {}
     result["losses_camera_group_indiv"] = np.array(losses_camera_group_indiv)
@@ -43,7 +72,7 @@ def wrap_em_common_result(losses_camera_group_indiv, losses_camera_group_common,
 
     return result
 
-def get_em_common_result(result):
+def get_kview_result(result):
     losses_camera_group_indiv = result["losses_camera_group_indiv"]
     losses_camera_group_common = result["losses_camera_group_common"]
     focus_distances_camera_group = result["focus_distances_camera_group"]
@@ -87,6 +116,50 @@ def getUniqueElements(arr):
     unique_arr = np.unique(np.array(unique_arr))
     unique_arr = np.sort(unique_arr)
     return unique_arr
+
+def initialize_focus_distances(pts, pts_set_per_camera, camera_positions, camera_dirs, mode='mean'):
+    """
+        Initialize focus distance for each camera.
+
+        Use zero/closest/average depth from the camera to its viisible point set.
+
+    Args:
+        pts: total point set, np array of shape (num points x 3) (in cartesian coordinates)
+        pts_set_per_camera: list of point set for each camera. Each point set is represented in point ids, 1-d np array.
+                            NOTE: Ids are ordered in the order of the total point set.
+                            NOTE: The points are already processed so that all the points are visible to the camera
+        camera_positions: array of camera positions, np array of shape (num cameras x 3)
+        camera_dirs: array of camera viewing directions, np array of shape (num cameras x 3)
+        mode: how to initialize focus distance, "min" for closest depth, "mean" for average depth, "zero" for zero depth
+
+    Returns:
+        focus_distances: array of focus distances, np array of shape (num cameras, )
+    """
+
+    focus_distances = []
+    for i, pts_set_ids, camera_position, camera_dir in zip(range(len(camera_positions)), pts_set_per_camera, camera_positions, camera_dirs):
+        if len(pts_set_ids) == 0: # no points visibile to this camera  # NOTE: check if there is a better way to handle this
+            focus_distances.append(0)
+            print("[Warning]: No point is visible to camera {}".format(i))
+            continue
+
+        pts_set_ids = np.array(pts_set_ids)
+        points = pts[pts_set_ids]
+        depths = trimesh.points.point_plane_distance(points, camera_dir.flatten(), camera_position.flatten())
+
+        if mode == "min": # closest depth
+            focus_distance = np.min(depths)
+        elif mode == "mean": # average depth
+            focus_distance = np.mean(depths)
+        elif mode == "zero": # zero depth
+            focus_distance = 0
+        else:
+            raise ValueError("Invalid mode: ", mode)
+        focus_distances.append(focus_distance)
+
+    focus_distances = np.array(focus_distances)
+
+    return focus_distances
 
 def getVisiblePointSetSingleCamera(mesh, pts, camera_position, camera_pose, w, h, K, distortion, intersection_tolerance=0.001):
     """

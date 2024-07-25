@@ -101,7 +101,7 @@ def getFocalLoss(pts, camera_position, camera_dir, focus_distance, camera_params
             # dof_n += 0.5 * (focus_distance - dof_n)
             # dof_f -= 0.5 * (dof_f - focus_distance)
         else:
-            raise NotImplementedError, "Only support num_focus_intervals=4"
+            raise NotImplementedError
 
     elif loss_type == "l1":
         loss = np.ones(np.shape(depths)) 
