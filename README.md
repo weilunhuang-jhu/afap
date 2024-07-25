@@ -32,16 +32,31 @@ pip install open3d
 
 ## Data
 
+### 3D mesh and sampled point cloud
 The textured 3D human mesh model can be downloaded: [3DBodyTex.v1](https://cvi2.uni.lu/datasets/).
-
-## Preprocess data
 
 In [script/](https://github.com/weilunhuang-jhu/afap/tree/main/script)
 
-- Transform data: (convert to mm scale)
+- Transform all data: (convert to mm scale)
 ```
 python transform_3dbodytex.py -i path_to_3dbodytex_data
 ```
+
+- Sample a point cloud $\mathcal{P}$:
+```
+python sample_pts.py -i ../data/3dbodytex/005 -n sampled.ply -p 1000
+```
+An output of *sampled.ply* will be created in the input folder.
+
+### Camera poses
+
+- Create a cylindrical camera network $\mathcal{C}$:
+
+```
+python sample_camera_poses_3dbodytex.py -i ../data/3dbodytex/005 -z 7 -a 24 -r 750
+```
+An output of *camera_poses_cylinder_7_24_266_750.pkl* will be created in the input folder.
+
 ## Usage
 
 ### Run the proposed algorithm
@@ -66,6 +81,20 @@ python KViews.py -i ../data/3dbodytex/005 -c camera_poses_cylinder_7_24_266_750.
 
 ### Visualization
 
+
+- Visualize input $\mathcal{P}$ and $\mathcal{C}$:
+```
+python visualize_input.py -i ..\data\3dbodytex\005 -c camera_poses_cylinder_7_24_266_750.pkl
+```
+
+- Visualize point quality:
+```
+python visualize_quality_pts.py -i ..\data\3dbodytex\005 -m kview
+```
+
+## Comparison among different methods
+We visualize the pointwise cost.
 ![Comparison 3D](https://i.imgur.com/wdgUyQm.png)
 
+We simulate the image using different focus distances (with the depth-of-field effect), as determined by different methods.
 ![Comparison Image](https://i.imgur.com/Oz5m8jQ.png)
