@@ -22,9 +22,11 @@ num_pt_samples = args.pts
 pcd = o3d.io.read_triangle_mesh(mesh_path)
 if not pcd.has_vertex_normals():
     pcd.compute_vertex_normals()
+    pcd.normalize_normals()
     print("Compute pcd vertex normals:", pcd.has_vertex_normals())
 
 pcd = pcd.sample_points_uniformly(number_of_points=num_pt_samples)
+pcd.normalize_normals()
 pcd_fname = os.path.join(root_dir, args.name)
 o3d.io.write_point_cloud(pcd_fname, pcd)
 

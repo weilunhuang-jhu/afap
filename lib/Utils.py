@@ -10,11 +10,19 @@ def init_data(mesh_path, sampled_pts_path, camera_pkl_file, ):
 
     # load mesh
     mesh_trimesh = trimesh.load(mesh_path, process=False, use_embree=True)
+    # # Check if all vertex normals are unit vectors in mesh_trimesh
+    # norms = np.linalg.norm(mesh_trimesh.vertex_normals, axis=1)
+    # assert np.allclose(norms, 1), "Not all vertex normals are unit vectors"
 
     # load points: uniformly sampled on the mesh
     pcd = o3d.io.read_point_cloud(sampled_pts_path)
     pts = np.asarray(pcd.points)
     pts_normals = np.asarray(pcd.normals)
+    # # Sanity check: make sure pts_normals are unit vectors
+    # norms = np.linalg.norm(pts_normals, axis=1)
+    # print(np.unique(norms))
+    # assert np.allclose(norms, 1), "Not all normals are unit vectors"
+    pts_normals = pts_normals / np.linalg.norm(pts_normals, axis=1, keepdims=True)
 
     # load camera configuration
     cameras_network = Camera.loadCamerasNetwork(camera_pkl_file)
